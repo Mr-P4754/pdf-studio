@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Studio - 結合・分割・並び替え・ダイレクト編集（完全ローカル処理）</title>
+  <meta name="description" content="ブラウザ上で完結する高セキュリティなPDF結合・分割・並び替え・空白ページ追加・既存テキスト編集・ページ番号付与・白塗りツール。">
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=BIZ+UDGothic:wght@400;700&family=BIZ+UDMincho:wght@400;700&family=Inter:wght@400;500;600;700&family=Libre+Baskerville:wght@400;700&family=Noto+Sans+JP:wght@400;500;600;700&family=Noto+Serif+JP:wght@400;600;700&display=swap" rel="stylesheet">
+  <!-- スタイルシート -->
+  <link rel="stylesheet" href="./css/style.css">
+  <!-- 外部ライブラリ (CDN) -->
+  <!-- pdf-lib v1.17.1 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <!-- @pdf-lib/fontkit v1.1.1 -->
+  <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
+  <!-- pdf.js v3.11.174 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- SortableJS v1.15.2 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.395.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <!-- アプリケーションヘッダー / ツールバー -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-icon">
+        <i data-lucide="file-stack"></i>
+      </div>
+      <div class="brand-text">
+        <h1 class="app-title">PDF Studio</h1>
+        <span class="security-badge" title="すべてのPDF処理はお使いのブラウザ内のメモリ上でのみ実行され、外部サーバーへ送信されることはありません。">
+          <i data-lucide="shield-check"></i>
+          完全ローカル処理・外部送信ゼロ
+        </span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <!-- ファイル追加ボタン -->
+      <input type="file" id="file-input" multiple accept=".pdf,application/pdf" hidden>
+      <button type="button" id="add-file-btn" class="btn btn-secondary" title="PDFファイルを追加読み込みします">
+        <i data-lucide="file-plus-2"></i>
+        <span>PDFを追加</span>
+      </button>
+
+      <!-- 空白ページ追加コントロール（用紙サイズ選択 + 追加ボタン） -->
+      <div class="blank-page-toolbar-group" title="追加する空白ページの用紙サイズを選択">
+        <select id="blank-page-size-select" class="toolbar-select" aria-label="空白ページの用紙サイズ">
+          <option value="match-prev">直前と同じサイズ (標準:A4縦)</option>
+          <option value="a4-portrait">A4 縦 (210×297mm)</option>
+          <option value="a4-landscape">A4 横 (297×210mm)</option>
+        </select>
+        <button type="button" id="add-blank-page-btn" class="btn btn-outline" title="選択した用紙サイズで末尾に空白ページを追加します">
+          <i data-lucide="file-plus"></i>
+          <span>空白ページを追加</span>
+        </button>
+      </div>
+
+      <div class="action-divider"></div>
+
+      <!-- 一括左右回転ボタン -->
+      <button type="button" id="rotate-all-ccw-btn" class="btn btn-outline" disabled title="すべてのページを反時計回りに90度（左へ）回転します">
+        <i data-lucide="rotate-ccw"></i>
+        <span class="hide-md">全左回転</span>
+      </button>
+
+      <button type="button" id="rotate-all-cw-btn" class="btn btn-outline" disabled title="すべてのページを時計回りに90度（右へ）回転します">
+        <i data-lucide="rotate-cw"></i>
+        <span class="hide-md">全右回転</span>
+      </button>
+
+      <button type="button" id="clear-all-btn" class="btn btn-danger-outline" disabled title="読み込み済みのすべてのページをクリアします">
+        <i data-lucide="trash-2"></i>
+        <span class="hide-md">クリア</span>
+      </button>
+
+      <div class="action-divider"></div>
+
+      <!-- ページ数ステータス -->
+      <div id="page-count-badge" class="page-count-badge">
+        <span id="total-pages-count">0</span> ページ
+      </div>
+
+      <!-- エクスポートボタン -->
+      <button type="button" id="export-btn" class="btn btn-primary" disabled title="現在の並び順・回転・空白ページ・ページ番号・編集内容でPDFを結合してダウンロードします">
+        <i data-lucide="download"></i>
+        <span>エクスポート</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- メインコンテンツ領域 -->
+  <main class="app-main">
+    <!-- ドラッグ＆ドロップゾーン -->
+    <section id="drop-zone" class="drop-zone" aria-label="PDFファイルアップロード領域">
+      <div class="drop-zone-content">
+        <div class="drop-zone-icon">
+          <i data-lucide="upload-cloud"></i>
+        </div>
+        <div class="drop-zone-text">
+          <h2 class="drop-zone-title">PDFファイルをここにドラッグ＆ドロップ</h2>
+          <p class="drop-zone-subtitle">
+            複数ファイルの結合・分割・空白ページ挿入・既存テキスト編集・通しページ番号付与に対応
+          </p>
+        </div>
+        <div class="drop-zone-actions">
+          <button type="button" id="drop-zone-btn" class="btn btn-primary btn-lg">
+            <i data-lucide="folder-open"></i>
+            <span>ファイルを選択する</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 通しページ番号（ヘッダー/フッター）設定パネル -->
+    <section id="page-number-panel" class="page-number-panel hidden" aria-label="通しページ番号設定">
+      <div class="panel-header-group">
+        <label class="toggle-switch-label" for="page-num-enabled">
+          <input type="checkbox" id="page-num-enabled" class="toggle-checkbox">
+          <span class="toggle-slider"></span>
+          <span class="toggle-title">
+            <i data-lucide="hash"></i>
+            通しページ番号（ヘッダー/フッター）を付与
+          </span>
+        </label>
+      </div>
+
+      <div id="page-num-controls" class="page-num-controls">
+        <!-- 書式選択 -->
+        <label class="setting-field" for="page-num-format">
+          <span class="setting-label">書式:</span>
+          <select id="page-num-format" class="setting-select">
+            <option value="simple">1</option>
+            <option value="hyphen" selected>- 1 -</option>
+            <option value="p-dot">P.1</option>
+            <option value="page-en">Page 1</option>
+            <option value="fraction">1 / 総ページ数</option>
+          </select>
+        </label>
+
+        <!-- フォント選択 -->
+        <label class="setting-field" for="page-num-font">
+          <span class="setting-label">フォント:</span>
+          <select id="page-num-font" class="setting-select">
+            <option value="ms-mincho">MS 明朝</option>
+            <option value="yu-mincho" selected>游明朝</option>
+            <option value="century">Century (センチュリー)</option>
+            <option value="times">Times New Roman</option>
+            <option value="yu-gothic">游ゴシック</option>
+            <option value="ms-gothic">MS ゴシック</option>
+            <option value="noto-sans">Noto Sans JP (ゴシック)</option>
+            <option value="noto-serif">Noto Serif JP (明朝)</option>
+            <option value="helvetica">Helvetica / Arial</option>
+          </select>
+        </label>
+
+        <!-- フォントサイズ設定 -->
+        <label class="setting-field" for="page-num-size">
+          <span class="setting-label">サイズ(pt):</span>
+          <input type="number" id="page-num-size" class="setting-input-number" value="10.5" min="6" max="36" step="0.5">
+        </label>
+
+        <!-- 開始ページ設定（何枚目から番号を振り始めるか） -->
+        <label class="setting-field" for="page-num-start-page" title="何枚目のページからページ番号の付与を開始するか指定します（例: 2にすると1枚目の表紙をスキップして2枚目から開始）">
+          <span class="setting-label">開始ページ:</span>
+          <input type="number" id="page-num-start-page" class="setting-input-number" value="1" min="1" max="9999" step="1">
+          <span class="setting-unit">枚目〜</span>
+        </label>
+
+        <!-- 開始番号設定 -->
+        <label class="setting-field" for="page-num-start" title="最初のページに印字する番号を指定します">
+          <span class="setting-label">開始番号:</span>
+          <input type="number" id="page-num-start" class="setting-input-number" value="1" min="1" max="9999" step="1">
+        </label>
+
+        <!-- 表示位置の一括設定 -->
+        <label class="setting-field" for="page-num-position">
+          <span class="setting-label">一括表示位置:</span>
+          <select id="page-num-position" class="setting-select">
+            <option value="bottom-center" selected>下中央</option>
+            <option value="bottom-right">下右</option>
+            <option value="bottom-left">下左</option>
+            <option value="top-center">上中央</option>
+            <option value="top-right">上右</option>
+            <option value="top-left">上左</option>
+          </select>
+        </label>
+
+        <span class="setting-hint">
+          ※各カード下部または拡大編集画面から、ページごとに「非表示（表紙など）」や「個別位置変更」が可能です
+        </span>
+      </div>
+    </section>
+
+    <!-- ワークスペース案内バー（ページ読み込み後に表示） -->
+    <section id="workspace-info-bar" class="workspace-info-bar hidden">
+      <div class="info-bar-left">
+        <span class="info-item">
+          <i data-lucide="move"></i>
+          ドラッグで並び替え
+        </span>
+        <span class="info-item">
+          <i data-lucide="file-plus"></i>
+          カードの「＋」で直後に空白頁挿入
+        </span>
+        <span class="info-item">
+          <i data-lucide="text-cursor-input"></i>
+          クリックで既存テキスト書換・削除・文字追加・白塗り
+        </span>
+      </div>
+      <div class="info-bar-right">
+        <span id="loaded-files-summary" class="loaded-files-summary">読み込みファイル: 0件</span>
+      </div>
+    </section>
+
+    <!-- ページサムネイル一覧グリッド -->
+    <section id="workspace-section" class="workspace-section hidden" aria-label="ページサムネイル一覧">
+      <div id="page-grid" class="page-grid">
+        <!-- JS (preview.js) により各ページのサムネイルカードがここに動的生成されます -->
+      </div>
+    </section>
+  </main>
+
+  <!-- ページ拡大・ダイレクト編集モーダル (editor.js) -->
+  <div id="editor-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editor-modal-title">
+    <div class="modal-container">
+      <!-- モーダルヘッダー -->
+      <header class="modal-header">
+        <div class="modal-title-group">
+          <span id="editor-page-badge" class="editor-page-badge">#1</span>
+          <div>
+            <h2 id="editor-modal-title" class="modal-title">ページ編集</h2>
+            <p id="editor-file-meta" class="modal-subtitle">sample.pdf (元ページ: 1)</p>
+          </div>
+        </div>
+
+        <!-- 編集ツールバー -->
+        <div class="editor-toolbar">
+          <!-- モード切替（既存テキスト編集 / 新規テキスト追加・移動 / 白塗り矩形） -->
+          <div class="tool-group" role="group" aria-label="編集ツール選択">
+            <button type="button" id="tool-direct-text-btn" class="tool-btn active" data-tool="direct-text" title="PDF内の既存テキストを自動検出し、クリックして書き換えまたは削除します">
+              <i data-lucide="text-cursor-input"></i>
+              <span>テキスト編集 (既存文字)</span>
+            </button>
+            <button type="button" id="tool-text-btn" class="tool-btn" data-tool="text" title="クリックした位置に新しいテキストを追記します（追加後のドラッグ移動・再編集が可能）">
+              <i data-lucide="type"></i>
+              <span>新規テキスト追加</span>
+            </button>
+            <button type="button" id="tool-whiteout-btn" class="tool-btn" data-tool="whiteout" title="ドラッグした矩形領域を白色で塗りつぶします（墨消し・修正）">
+              <i data-lucide="eraser"></i>
+              <span>白塗り (矩形)</span>
+            </button>
+          </div>
+
+          <!-- テキスト設定オプション（フォント・サイズ・文字色） -->
+          <div id="text-tool-options" class="tool-options">
+            <label class="option-label" for="text-font-select">
+              <span>フォント:</span>
+              <select id="text-font-select" class="modal-select">
+                <option value="noto-sans" selected>Noto Sans JP (ゴシック)</option>
+                <option value="yu-gothic">游ゴシック</option>
+                <option value="ms-gothic">MS ゴシック</option>
+                <option value="yu-mincho">游明朝</option>
+                <option value="ms-mincho">MS 明朝</option>
+                <option value="noto-serif">Noto Serif JP (明朝)</option>
+                <option value="century">Century (センチュリー)</option>
+                <option value="times">Times New Roman</option>
+                <option value="helvetica">Helvetica / Arial</option>
+              </select>
+            </label>
+            <label class="option-label" for="text-size-input">
+              <span>サイズ(pt):</span>
+              <input type="number" id="text-size-input" class="option-input-number" value="16" min="6" max="120" step="1">
+            </label>
+            <label class="option-label" for="text-color-input">
+              <span>文字色:</span>
+              <input type="color" id="text-color-input" class="option-input-color" value="#000000">
+            </label>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- ページ左右回転・ページ番号個別設定・履歴操作 -->
+          <div class="tool-group">
+            <button type="button" id="modal-rotate-ccw-btn" class="btn btn-sm btn-outline" title="左へ90度回転（反時計回り / -90°）">
+              <i data-lucide="rotate-ccw"></i>
+              <span>左90°</span>
+            </button>
+            <button type="button" id="modal-rotate-cw-btn" class="btn btn-sm btn-outline" title="右へ90度回転（時計回り / +90°）">
+              <i data-lucide="rotate-cw"></i>
+              <span>右90°</span>
+            </button>
+          </div>
+
+          <!-- このページのページ番号個別設定 -->
+          <div class="tool-options">
+            <label class="option-label" for="modal-pagenum-override-select">
+              <span>頁番号:</span>
+              <select id="modal-pagenum-override-select" class="modal-select">
+                <option value="inherit">一括設定に従う</option>
+                <option value="hidden">番号を飛ばす / 非表示 (表紙・中扉等)</option>
+                <option value="count-only">印字のみ隠す (番号は進める)</option>
+                <option value="bottom-center">個別: 下中央</option>
+                <option value="bottom-right">個別: 下右</option>
+                <option value="bottom-left">個別: 下左</option>
+                <option value="top-center">個別: 上中央</option>
+                <option value="top-right">個別: 上右</option>
+                <option value="top-left">個別: 上左</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="tool-group">
+            <button type="button" id="modal-undo-btn" class="btn btn-sm btn-outline" disabled title="直前の編集操作を1つ取り消します">
+              <i data-lucide="undo-2"></i>
+              <span>戻す</span>
+            </button>
+            <button type="button" id="modal-clear-edits-btn" class="btn btn-sm btn-danger-outline" disabled title="このページの編集をすべてリセットします">
+              <i data-lucide="trash"></i>
+              <span>リセット</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="modal-header-right">
+          <button type="button" id="modal-save-btn" class="btn btn-primary">
+            <i data-lucide="check"></i>
+            <span>完了して閉じる</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- モード操作ガイドバー -->
+      <div class="editor-guide-bar">
+        <span id="editor-guide-text" class="guide-text">
+          <i data-lucide="info"></i>
+          <span>【テキスト編集モード】青枠でハイライトされた既存テキストをクリックすると、文字の書き換え・削除が可能です。編集後の文字はドラッグで位置微調整もできます。</span>
+        </span>
+        <span id="editor-edits-count" class="edits-count-label">編集箇所: 0件</span>
+      </div>
+
+      <!-- キャンバス描画ボディ -->
+      <div id="editor-canvas-viewport" class="editor-canvas-viewport">
+        <div id="editor-canvas-stage" class="editor-canvas-stage">
+          <!-- PDF本体の描画キャンバス -->
+          <canvas id="editor-pdf-canvas"></canvas>
+          <!-- 既存テキスト検出枠・白塗り・テキスト・ページ番号プレビュー用のオーバーレイキャンバス -->
+          <canvas id="editor-overlay-canvas"></canvas>
+
+          <!-- テキスト編集・追加用フローティングポップオーバー -->
+          <div id="text-input-popover" class="text-input-popover hidden">
+            <div class="popover-header">
+              <span id="popover-title-text">テキストを編集</span>
+              <button type="button" id="popover-cancel-btn" class="popover-close-btn" title="キャンセル">
+                <i data-lucide="x"></i>
+              </button>
+            </div>
+            <div class="popover-body">
+              <input type="text" id="popover-text-field" class="popover-text-field" placeholder="文字を入力（空欄または削除で消去）..." autocomplete="off">
+              <div class="popover-actions">
+                <button type="button" id="popover-delete-text-btn" class="btn btn-danger-outline btn-sm hidden" title="この文字を削除（マスク消去）します">
+                  <i data-lucide="trash-2"></i>
+                  <span>文字削除</span>
+                </button>
+                <button type="button" id="popover-confirm-btn" class="btn btn-primary btn-sm">
+                  <span>適用</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 画面全体へのドラッグ＆ドロップ時オーバーレイ -->
+  <div id="global-drop-overlay" class="global-drop-overlay hidden">
+    <div class="global-drop-box">
+      <i data-lucide="file-down"></i>
+      <p>ドロップしてPDFファイルを追加</p>
+    </div>
+  </div>
+
+  <!-- 全画面ローディングオーバーレイ -->
+  <div id="loading-overlay" class="loading-overlay hidden" aria-live="assertive" aria-busy="true">
+    <div class="loading-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <h3 id="loading-message" class="loading-title">処理中...</h3>
+      <p id="loading-submessage" class="loading-subtitle">しばらくお待ちください</p>
+      <div class="progress-bar-container">
+        <div id="loading-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- トースト通知コンテナ -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- アプリケーションスクリプト (ES Modules) -->
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
