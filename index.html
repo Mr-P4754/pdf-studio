@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PDF Studio - 結合・分割・並び替え・ダイレクト編集（完全ローカル処理）</title>
-  <meta name="description" content="ブラウザ上で完結する高セキュリティなPDF結合・分割・並び替え・空白ページ追加・既存テキスト編集・ページ番号付与・白塗りツール。">
+  <meta name="description" content="ブラウザ上で完結する高セキュリティなPDF結合・分割・並び替え・空白ページ追加・既存テキスト編集・図形(□/〇)追加・画像(.png/.jpeg)貼付・ページ番号付与・白塗りツール。">
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -104,7 +104,7 @@
         <div class="drop-zone-text">
           <h2 class="drop-zone-title">PDFファイルをここにドラッグ＆ドロップ</h2>
           <p class="drop-zone-subtitle">
-            複数ファイルの結合・分割・空白ページ挿入・既存テキスト編集・通しページ番号付与に対応
+            複数ファイルの結合・分割・空白ページ挿入・既存テキスト編集・図形(□/〇)＆画像(.png/.jpeg)貼付・通しページ番号付与に対応
           </p>
         </div>
         <div class="drop-zone-actions">
@@ -209,7 +209,7 @@
         </span>
         <span class="info-item">
           <i data-lucide="text-cursor-input"></i>
-          クリックで既存テキスト書換・削除・文字追加・白塗り
+          クリックで既存テキスト書換・図形(□/〇)追加・画像(.png/.jpg)貼付・白塗り
         </span>
       </div>
       <div class="info-bar-right">
@@ -240,19 +240,27 @@
 
         <!-- 編集ツールバー -->
         <div class="editor-toolbar">
-          <!-- モード切替（既存テキスト編集 / 新規テキスト追加・移動 / 白塗り矩形） -->
+          <!-- モード切替（既存テキスト編集 / 新規テキスト追加 / 図形追加 / 画像貼付 / 白塗り矩形） -->
           <div class="tool-group" role="group" aria-label="編集ツール選択">
             <button type="button" id="tool-direct-text-btn" class="tool-btn active" data-tool="direct-text" title="PDF内の既存テキストを自動検出し、クリックして書き換えまたは削除します">
               <i data-lucide="text-cursor-input"></i>
-              <span>テキスト編集 (既存文字)</span>
+              <span>テキスト編集</span>
             </button>
             <button type="button" id="tool-text-btn" class="tool-btn" data-tool="text" title="クリックした位置に新しいテキストを追記します（追加後のドラッグ移動・再編集が可能）">
               <i data-lucide="type"></i>
-              <span>新規テキスト追加</span>
+              <span>新規文字</span>
+            </button>
+            <button type="button" id="tool-shape-btn" class="tool-btn" data-tool="shape" title="□（四角形）や〇（丸・楕円）などの図形を追加します（ドラッグ描画またはクリック配置・サイズ変更可能）">
+              <i data-lucide="shapes"></i>
+              <span>図形 (□・〇)</span>
+            </button>
+            <button type="button" id="tool-image-btn" class="tool-btn" data-tool="image" title="PNGやJPEGなどの画像ファイルをページ上に貼り付け・配置します（ドラッグ移動・サイズ変更可能）">
+              <i data-lucide="image-plus"></i>
+              <span>画像貼付</span>
             </button>
             <button type="button" id="tool-whiteout-btn" class="tool-btn" data-tool="whiteout" title="ドラッグした矩形領域を白色で塗りつぶします（墨消し・修正）">
               <i data-lucide="eraser"></i>
-              <span>白塗り (矩形)</span>
+              <span>白塗り</span>
             </button>
           </div>
 
@@ -280,6 +288,55 @@
               <span>文字色:</span>
               <input type="color" id="text-color-input" class="option-input-color" value="#000000">
             </label>
+          </div>
+
+          <!-- 図形（□・〇等）設定オプション -->
+          <div id="shape-tool-options" class="tool-options hidden">
+            <div class="shape-quick-group" role="group" aria-label="図形種類のクイック選択">
+              <button type="button" class="shape-quick-btn active" data-shape="rect" title="□ 四角形（枠囲み・矩形）">□ 四角</button>
+              <button type="button" class="shape-quick-btn" data-shape="circle" title="〇 丸・楕円（選択肢のマル付け・強調）">〇 丸</button>
+              <button type="button" class="shape-quick-btn" data-shape="triangle" title="△ 三角形">△ 三角</button>
+              <button type="button" class="shape-quick-btn" data-shape="check" title="✓ チェックマーク">✓</button>
+              <button type="button" class="shape-quick-btn" data-shape="cross" title="× バツ印">×</button>
+              <button type="button" class="shape-quick-btn" data-shape="line" title="― 直線（取消線・下線）">― 線</button>
+            </div>
+            <label class="option-label" for="shape-type-select">
+              <select id="shape-type-select" class="modal-select" aria-label="図形種類">
+                <option value="rect" selected>□ 四角形</option>
+                <option value="circle">〇 丸・楕円</option>
+                <option value="triangle">△ 三角形</option>
+                <option value="check">✓ チェック</option>
+                <option value="cross">× バツ印</option>
+                <option value="line">― 直線</option>
+              </select>
+            </label>
+            <label class="option-label" for="shape-stroke-width-input">
+              <span>線幅(pt):</span>
+              <input type="number" id="shape-stroke-width-input" class="option-input-number" value="2" min="0.5" max="24" step="0.5">
+            </label>
+            <label class="option-label" for="shape-stroke-color-input">
+              <span>線色:</span>
+              <input type="color" id="shape-stroke-color-input" class="option-input-color" value="#000000">
+            </label>
+            <label class="option-label" for="shape-fill-enabled-input" title="図形内部を塗りつぶす場合はチェック">
+              <input type="checkbox" id="shape-fill-enabled-input">
+              <span>塗り:</span>
+            </label>
+            <input type="color" id="shape-fill-color-input" class="option-input-color" value="#ffffff" title="塗りつぶし色">
+          </div>
+
+          <!-- 画像（.png / .jpeg等）設定オプション -->
+          <div id="image-tool-options" class="tool-options hidden">
+            <input type="file" id="editor-image-input" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp" hidden>
+            <button type="button" id="image-upload-btn" class="btn btn-sm btn-primary" title="パソコン内のPNG・JPEG画像ファイルを選択してページに追加します">
+              <i data-lucide="upload"></i>
+              <span>画像を選択 (.png / .jpg)</span>
+            </button>
+            <label class="option-label" for="image-lock-aspect-input" title="四隅のハンドルでリサイズする際、元の縦横比（アスペクト比）を保ちます">
+              <input type="checkbox" id="image-lock-aspect-input" checked>
+              <span>縦横比を維持</span>
+            </label>
+            <span class="option-hint">※Ctrl+V貼付・画像ドロップ可</span>
           </div>
 
           <div class="toolbar-divider"></div>
@@ -315,6 +372,10 @@
           </div>
 
           <div class="tool-group">
+            <button type="button" id="modal-delete-selected-btn" class="btn btn-sm btn-danger-outline" disabled title="選択中の図形・画像・テキスト・白塗り要素を削除します (Deleteキー)">
+              <i data-lucide="trash-2"></i>
+              <span>選択削除</span>
+            </button>
             <button type="button" id="modal-undo-btn" class="btn btn-sm btn-outline" disabled title="直前の編集操作を1つ取り消します">
               <i data-lucide="undo-2"></i>
               <span>戻す</span>

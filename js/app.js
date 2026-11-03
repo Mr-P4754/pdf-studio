@@ -973,9 +973,13 @@ function bindFileUploadEvents() {
     const types = event.dataTransfer?.types;
     return types && Array.from(types).includes('Files');
   };
+  const isEditorModalOpen = () => {
+    const modal = document.getElementById('editor-modal');
+    return Boolean(modal && !modal.classList.contains('hidden'));
+  };
 
   window.addEventListener('dragenter', (event) => {
-    if (!isFileDragEvent(event) || appState.isBusy) {
+    if (!isFileDragEvent(event) || appState.isBusy || isEditorModalOpen()) {
       return;
     }
     event.preventDefault();
@@ -984,7 +988,7 @@ function bindFileUploadEvents() {
   });
 
   window.addEventListener('dragover', (event) => {
-    if (!isFileDragEvent(event)) {
+    if (!isFileDragEvent(event) || isEditorModalOpen()) {
       return;
     }
     event.preventDefault();
@@ -994,7 +998,7 @@ function bindFileUploadEvents() {
   });
 
   window.addEventListener('dragleave', (event) => {
-    if (!isFileDragEvent(event)) {
+    if (!isFileDragEvent(event) || isEditorModalOpen()) {
       return;
     }
     dragDepth = Math.max(0, dragDepth - 1);
@@ -1004,7 +1008,7 @@ function bindFileUploadEvents() {
   });
 
   window.addEventListener('drop', (event) => {
-    if (!isFileDragEvent(event)) {
+    if (!isFileDragEvent(event) || isEditorModalOpen()) {
       return;
     }
     event.preventDefault();

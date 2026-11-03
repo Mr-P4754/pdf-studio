@@ -564,7 +564,280 @@ function hexToPdfRgb(hexColor) {
 }
 
 /**
- * ビューア上の矩形 (xv, yv, wv, hv) を回転考慮で pdf-lib ページに描画する内部ヘルパー
+ * DataURL ごとの HTMLImageElement キャッシュ（Canvas上の同期描画用）
+ * @type {Map<string, HTMLImageElement>}
+ */
+const imageElementCache = new Map();
+
+/**
+ * DataURL からキャッシュ済みの HTMLImageElement を取得する（未ロードの場合は非同期ロードを開始）
+ * @param {string} dataUrl - 画像の DataURL
+ * @param {() => void} [onLoad] - 非同期ロード完了時に呼ばれるコールバック
+ * @returns {HTMLImageElement | null} ロード完了済みの場合は HTMLImageElement、ロード中は null
+ */
+export function getCachedImageElement(dataUrl, onLoad) {
+  if (!dataUrl || typeof Image === 'undefined') {
+    return null;
+  }
+  const existing = imageElementCache.get(dataUrl);
+  if (existing) {
+    if (existing.complete && existing.naturalWidth > 0) {
+      return existing;
+    }
+    if (typeof onLoad === 'function') {
+      existing.addEventListener('load', onLoad, { once: true });
+    }
+    return null;
+  }
+
+  const img = new Image();
+  if (typeof onLoad === 'function') {
+    img.addEventListener('load', onLoad, { once: true });
+  }
+  img.src = dataUrl;
+  imageElementCache.set(dataUrl, img);
+  return img.complete && img.naturalWidth > 0 ? img : null;
+}
+
+/**
+ * 画像 File または Blob を読み込み、Canvas描画および pdf-lib 埋め込みに適した DataURL とサイズ情報を返す
+ * WebP / GIF / BMP 等の場合、または PNG / JPEG 以外の形式は透過保持の PNG DataURL へ自動変換する
+ *
+ * @param {File | Blob} file - 画像ファイル (.png, .jpg, .jpeg, .webp 等)
+ * @returns {Promise<{
+ *   dataUrl: string,
+ *   mimeType: 'image/png' | 'image/jpeg',
+ *   width: number,
+ *   height: number,
+ *   aspectRatio: number,
+ *   imageName: string
+ * }>}
+ */
+export async function loadImageFileForEditor(file) {
+  if (!file) {
+    throw new Error('画像ファイルが指定されていません。');
+  }
+
+  const rawDataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () =>
+      reject(new Error('画像ファイルの読み込みに失敗しました。'));
+    reader.readAsDataURL(file);
+  });
+
+  const img = await new Promise((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () =>
+      reject(new Error('画像データのデコードに失敗しました。'));
+    el.src = rawDataUrl;
+  });
+
+  const naturalWidth = Math.max(1, img.naturalWidth || img.width || 100);
+  const naturalHeight = Math.max(1, img.naturalHeight || img.height || 100);
+
+  let finalDataUrl = rawDataUrl;
+  let finalMimeType = 'image/png';
+
+  const lowerType = (file.type || '').toLowerCase();
+  const lowerName = (file.name || '').toLowerCase();
+
+  if (
+    lowerType === 'image/jpeg' ||
+    lowerType === 'image/jpg' ||
+    lowerName.endsWith('.jpg') ||
+    lowerName.endsWith('.jpeg')
+  ) {
+    finalMimeType = 'image/jpeg';
+  } else if (lowerType === 'image/png' || lowerName.endsWith('.png')) {
+    finalMimeType = 'image/png';
+  } else {
+    // WebP / GIF / BMP / SVG 等はオフスクリーンCanvasで透過PNGに正規化
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = naturalWidth;
+    offCanvas.height = naturalHeight;
+    const offCtx = offCanvas.getContext('2d');
+    offCtx.drawImage(img, 0, 0, naturalWidth, naturalHeight);
+    finalDataUrl = offCanvas.toDataURL('image/png');
+    finalMimeType = 'image/png';
+  }
+
+  // キャッシュに登録して即座に同期描画可能にする
+  imageElementCache.set(finalDataUrl, img);
+
+  return {
+    dataUrl: finalDataUrl,
+    mimeType: finalMimeType,
+    width: naturalWidth,
+    height: naturalHeight,
+    aspectRatio: naturalWidth / naturalHeight,
+    imageName: file.name || 'pasted-image.png'
+  };
+}
+
+/**
+ * DataURL 文字列から Uint8Array バイナリへ変換する
+ * @param {string} dataUrl - Base64 DataURL
+ * @returns {Uint8Array}
+ */
+function dataUrlToUint8Array(dataUrl) {
+  const commaIdx = dataUrl.indexOf(',');
+  const base64 = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
+ * 任意の画像 DataURL をオフスクリーンCanvas経由で標準PNGバイト列に変換する（フォールバック用）
+ * @param {string} dataUrl - 元画像の DataURL
+ * @returns {Promise<Uint8Array>} PNGバイト配列
+ */
+async function convertDataUrlToPngBytesViaCanvas(dataUrl) {
+  const img = await new Promise((resolve, reject) => {
+    const cached = imageElementCache.get(dataUrl);
+    if (cached && cached.complete && cached.naturalWidth > 0) {
+      resolve(cached);
+      return;
+    }
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('画像の再変換に失敗しました。'));
+    el.src = dataUrl;
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, img.naturalWidth || img.width || 100);
+  canvas.height = Math.max(1, img.naturalHeight || img.height || 100);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const pngDataUrl = canvas.toDataURL('image/png');
+  return dataUrlToUint8Array(pngDataUrl);
+}
+
+/**
+ * 出力先の PDFDocument に対して画像（PNGまたはJPEG）を埋め込み、キャッシュして返す
+ * @param {object} outputPdf - pdf-lib の PDFDocument インスタンス
+ * @param {object} edit - 画像編集要素 ({ dataUrl, mimeType })
+ * @param {Map<string, object>} docImageCache - ドキュメント単位の埋め込み済み PDFImage キャッシュ
+ * @returns {Promise<object | null>} 埋め込まれた PDFImage インスタンス
+ */
+async function resolveEmbeddedImageForPdf(outputPdf, edit, docImageCache) {
+  const dataUrl = edit?.dataUrl;
+  if (!dataUrl) {
+    return null;
+  }
+  if (docImageCache.has(dataUrl)) {
+    return docImageCache.get(dataUrl);
+  }
+
+  try {
+    const rawBytes = dataUrlToUint8Array(dataUrl);
+    const isJpeg =
+      edit.mimeType === 'image/jpeg' ||
+      dataUrl.startsWith('data:image/jpeg') ||
+      dataUrl.startsWith('data:image/jpg');
+
+    let embeddedImg = null;
+    try {
+      embeddedImg = isJpeg
+        ? await outputPdf.embedJpg(rawBytes)
+        : await outputPdf.embedPng(rawBytes);
+    } catch {
+      // 特殊なプログレッシブJPEGや非標準チャンク等で失敗した場合はCanvas経由でPNG化して確実に埋め込む
+      const fallbackPngBytes = await convertDataUrlToPngBytesViaCanvas(dataUrl);
+      embeddedImg = await outputPdf.embedPng(fallbackPngBytes);
+    }
+
+    if (embeddedImg) {
+      docImageCache.set(dataUrl, embeddedImg);
+    }
+    return embeddedImg;
+  } catch (error) {
+    console.warn('PDFへの画像埋め込みに失敗しました:', error);
+    return null;
+  }
+}
+
+/**
+ * ビューア上の座標点 (px, py) を回転考慮で未回転PDFページ座標 (X, Y) に変換する内部ヘルパー
+ */
+function mapViewerPointToPdfPoint(
+  px,
+  py,
+  normalizedRot,
+  x0,
+  y0,
+  rawWidth,
+  rawHeight
+) {
+  if (normalizedRot === 0) {
+    return { x: x0 + px, y: y0 + rawHeight - py };
+  }
+  if (normalizedRot === 90) {
+    return { x: x0 + py, y: y0 + px };
+  }
+  if (normalizedRot === 180) {
+    return { x: x0 + rawWidth - px, y: y0 + py };
+  }
+  // normalizedRot === 270
+  return { x: x0 + rawWidth - py, y: y0 + rawHeight - px };
+}
+
+/**
+ * ビューア上の矩形領域 (xv, yv, wv, hv) を未回転PDFページ上の軸平行バウンディングボックスに変換する内部ヘルパー
+ */
+function computeRotatedViewBoxInPdfSpace(
+  xv,
+  yv,
+  wv,
+  hv,
+  normalizedRot,
+  x0,
+  y0,
+  rawWidth,
+  rawHeight
+) {
+  if (normalizedRot === 0) {
+    return {
+      rectX: x0 + xv,
+      rectY: y0 + rawHeight - yv - hv,
+      rectW: wv,
+      rectH: hv
+    };
+  }
+  if (normalizedRot === 90) {
+    return {
+      rectX: x0 + yv,
+      rectY: y0 + xv,
+      rectW: hv,
+      rectH: wv
+    };
+  }
+  if (normalizedRot === 180) {
+    return {
+      rectX: x0 + rawWidth - xv - wv,
+      rectY: y0 + yv,
+      rectW: wv,
+      rectH: hv
+    };
+  }
+  // normalizedRot === 270
+  return {
+    rectX: x0 + rawWidth - yv - hv,
+    rectY: y0 + rawHeight - xv - wv,
+    rectW: hv,
+    rectH: wv
+  };
+}
+
+/**
+ * ビューア上の矩形 (xv, yv, wv, hv) を回転考慮で pdf-lib ページに塗りつぶし描画する内部ヘルパー
  */
 function drawRotatedViewRectOnPdfPage(
   pdfPage,
@@ -579,32 +852,17 @@ function drawRotatedViewRectOnPdfPage(
   rawWidth,
   rawHeight
 ) {
-  let rectX = x0;
-  let rectY = y0;
-  let rectW = wv;
-  let rectH = hv;
-
-  if (normalizedRot === 0) {
-    rectX = x0 + xv;
-    rectY = y0 + rawHeight - yv - hv;
-    rectW = wv;
-    rectH = hv;
-  } else if (normalizedRot === 90) {
-    rectX = x0 + yv;
-    rectY = y0 + xv;
-    rectW = hv;
-    rectH = wv;
-  } else if (normalizedRot === 180) {
-    rectX = x0 + rawWidth - xv - wv;
-    rectY = y0 + yv;
-    rectW = wv;
-    rectH = hv;
-  } else if (normalizedRot === 270) {
-    rectX = x0 + rawWidth - yv - hv;
-    rectY = y0 + rawHeight - xv - wv;
-    rectW = hv;
-    rectH = wv;
-  }
+  const { rectX, rectY, rectW, rectH } = computeRotatedViewBoxInPdfSpace(
+    xv,
+    yv,
+    wv,
+    hv,
+    normalizedRot,
+    x0,
+    y0,
+    rawWidth,
+    rawHeight
+  );
 
   pdfPage.drawRectangle({
     x: rectX,
@@ -613,6 +871,240 @@ function drawRotatedViewRectOnPdfPage(
     height: Math.max(0.5, rectH),
     color: colorRgb,
     opacity: 1
+  });
+}
+
+/**
+ * ビューア上の図形（□ 四角形 / 〇 丸・楕円 / △ 三角形 / ✓ チェック / × バツ印 / ― 直線）を
+ * 回転考慮で pdf-lib ページにベクター描画する内部ヘルパー
+ */
+function drawRotatedViewShapeOnPdfPage(
+  pdfPage,
+  edit,
+  xv,
+  yv,
+  wv,
+  hv,
+  normalizedRot,
+  x0,
+  y0,
+  rawWidth,
+  rawHeight
+) {
+  const { LineCapStyle } = window.PDFLib;
+  const shapeType = edit.shapeType || 'rect';
+  const strokeWidth = Math.max(0.5, Number(edit.strokeWidthPt) || 2);
+  const strokeColorRgb = hexToPdfRgb(edit.strokeColor || '#000000');
+  const fillColorRgb = edit.fillEnabled
+    ? hexToPdfRgb(edit.fillColor || '#ffffff')
+    : null;
+
+  const { rectX, rectY, rectW, rectH } = computeRotatedViewBoxInPdfSpace(
+    xv,
+    yv,
+    wv,
+    hv,
+    normalizedRot,
+    x0,
+    y0,
+    rawWidth,
+    rawHeight
+  );
+
+  if (shapeType === 'rect') {
+    const opts = {
+      x: rectX,
+      y: rectY,
+      width: Math.max(0.5, rectW),
+      height: Math.max(0.5, rectH),
+      borderColor: strokeColorRgb,
+      borderWidth: strokeWidth,
+      borderOpacity: 1
+    };
+    if (fillColorRgb) {
+      opts.color = fillColorRgb;
+      opts.opacity = 1;
+    }
+    pdfPage.drawRectangle(opts);
+    return;
+  }
+
+  if (shapeType === 'circle') {
+    const opts = {
+      x: rectX + rectW / 2,
+      y: rectY + rectH / 2,
+      xScale: Math.max(0.5, rectW / 2),
+      yScale: Math.max(0.5, rectH / 2),
+      borderColor: strokeColorRgb,
+      borderWidth: strokeWidth,
+      borderOpacity: 1
+    };
+    if (fillColorRgb) {
+      opts.color = fillColorRgb;
+      opts.opacity = 1;
+    }
+    pdfPage.drawEllipse(opts);
+    return;
+  }
+
+  const mapPt = (px, py) =>
+    mapViewerPointToPdfPoint(
+      px,
+      py,
+      normalizedRot,
+      x0,
+      y0,
+      rawWidth,
+      rawHeight
+    );
+
+  const lineCap = LineCapStyle ? LineCapStyle.Round : undefined;
+
+  if (shapeType === 'triangle') {
+    const p1 = mapPt(xv + wv / 2, yv);
+    const p2 = mapPt(xv + wv, yv + hv);
+    const p3 = mapPt(xv, yv + hv);
+
+    if (fillColorRgb && typeof pdfPage.drawSvgPath === 'function') {
+      // pdf-lib の drawSvgPath は Y 座標を反転するため -y を指定して正確なPDF座標に一致させる
+      const svgPath = `M ${p1.x} ${-p1.y} L ${p2.x} ${-p2.y} L ${p3.x} ${-p3.y} Z`;
+      pdfPage.drawSvgPath(svgPath, {
+        x: 0,
+        y: 0,
+        color: fillColorRgb,
+        borderColor: strokeColorRgb,
+        borderWidth: strokeWidth
+      });
+    } else {
+      pdfPage.drawLine({
+        start: p1,
+        end: p2,
+        thickness: strokeWidth,
+        color: strokeColorRgb,
+        lineCap
+      });
+      pdfPage.drawLine({
+        start: p2,
+        end: p3,
+        thickness: strokeWidth,
+        color: strokeColorRgb,
+        lineCap
+      });
+      pdfPage.drawLine({
+        start: p3,
+        end: p1,
+        thickness: strokeWidth,
+        color: strokeColorRgb,
+        lineCap
+      });
+    }
+    return;
+  }
+
+  if (shapeType === 'check') {
+    const p1 = mapPt(xv + wv * 0.14, yv + hv * 0.54);
+    const p2 = mapPt(xv + wv * 0.42, yv + hv * 0.84);
+    const p3 = mapPt(xv + wv * 0.88, yv + hv * 0.18);
+    pdfPage.drawLine({
+      start: p1,
+      end: p2,
+      thickness: strokeWidth,
+      color: strokeColorRgb,
+      lineCap
+    });
+    pdfPage.drawLine({
+      start: p2,
+      end: p3,
+      thickness: strokeWidth,
+      color: strokeColorRgb,
+      lineCap
+    });
+    return;
+  }
+
+  if (shapeType === 'cross') {
+    const p1 = mapPt(xv + wv * 0.15, yv + hv * 0.15);
+    const p2 = mapPt(xv + wv * 0.85, yv + hv * 0.85);
+    const p3 = mapPt(xv + wv * 0.85, yv + hv * 0.15);
+    const p4 = mapPt(xv + wv * 0.15, yv + hv * 0.85);
+    pdfPage.drawLine({
+      start: p1,
+      end: p2,
+      thickness: strokeWidth,
+      color: strokeColorRgb,
+      lineCap
+    });
+    pdfPage.drawLine({
+      start: p3,
+      end: p4,
+      thickness: strokeWidth,
+      color: strokeColorRgb,
+      lineCap
+    });
+    return;
+  }
+
+  if (shapeType === 'line') {
+    const p1 = mapPt(xv, yv + hv / 2);
+    const p2 = mapPt(xv + wv, yv + hv / 2);
+    pdfPage.drawLine({
+      start: p1,
+      end: p2,
+      thickness: strokeWidth,
+      color: strokeColorRgb,
+      lineCap
+    });
+  }
+}
+
+/**
+ * ビューア上の画像矩形 (xv, yv, wv, hv) を回転考慮で pdf-lib ページに描画する内部ヘルパー
+ */
+function drawRotatedViewImageOnPdfPage(
+  pdfPage,
+  embeddedImage,
+  xv,
+  yv,
+  wv,
+  hv,
+  normalizedRot,
+  x0,
+  y0,
+  rawWidth,
+  rawHeight
+) {
+  if (!embeddedImage) {
+    return;
+  }
+  const { degrees } = window.PDFLib;
+  let imgX = x0 + xv;
+  let imgY = y0 + rawHeight - yv - hv;
+  let imgRotateAngle = 0;
+
+  if (normalizedRot === 0) {
+    imgX = x0 + xv;
+    imgY = y0 + rawHeight - yv - hv;
+    imgRotateAngle = 0;
+  } else if (normalizedRot === 90) {
+    imgX = x0 + yv + hv;
+    imgY = y0 + xv;
+    imgRotateAngle = 90;
+  } else if (normalizedRot === 180) {
+    imgX = x0 + rawWidth - xv;
+    imgY = y0 + yv + hv;
+    imgRotateAngle = 180;
+  } else if (normalizedRot === 270) {
+    imgX = x0 + rawWidth - yv - hv;
+    imgY = y0 + rawHeight - xv;
+    imgRotateAngle = -90;
+  }
+
+  pdfPage.drawImage(embeddedImage, {
+    x: imgX,
+    y: imgY,
+    width: Math.max(1, wv),
+    height: Math.max(1, hv),
+    rotate: degrees(imgRotateAngle)
   });
 }
 
@@ -679,20 +1171,22 @@ function drawRotatedViewTextOnPdfPage(
 
 /**
  * ビューア上の左上原点正規化座標 (0.0〜1.0) を、ページの回転角度を考慮して
- * pdf-lib の未回転ページ座標系 (左下原点) へ変換し、白塗り・既存テキスト置換・新規テキストを描画する
+ * pdf-lib の未回転ページ座標系 (左下原点) へ変換し、白塗り・既存テキスト置換・新規テキスト・図形・画像を描画する
  *
  * @param {object} outputPdf - pdf-lib の出力 PDFDocument
  * @param {object} pdfPage - pdf-lib の PDFPage インスタンス
  * @param {Array<object>} edits - ページに対する編集操作の配列
  * @param {number} totalRotation - 合算後のページ回転角 (0, 90, 180, 270)
  * @param {Map<string, object>} docFontCache - 埋め込み済みフォントのキャッシュマップ
+ * @param {Map<string, object>} docImageCache - 埋め込み済み画像のキャッシュマップ
  */
 async function applyEditsToPdfPage(
   outputPdf,
   pdfPage,
   edits,
   totalRotation,
-  docFontCache
+  docFontCache,
+  docImageCache
 ) {
   if (!edits || edits.length === 0) {
     return;
@@ -729,6 +1223,51 @@ async function applyEditsToPdfPage(
         rawWidth,
         rawHeight
       );
+    } else if (edit.type === 'shape') {
+      const xv = edit.xRatio * viewWidth;
+      const yv = edit.yRatio * viewHeight;
+      const wv = (edit.widthRatio || 0.08) * viewWidth;
+      const hv = (edit.heightRatio || 0.08) * viewHeight;
+
+      drawRotatedViewShapeOnPdfPage(
+        pdfPage,
+        edit,
+        xv,
+        yv,
+        wv,
+        hv,
+        normalizedRot,
+        x0,
+        y0,
+        rawWidth,
+        rawHeight
+      );
+    } else if (edit.type === 'image' && edit.dataUrl) {
+      const embeddedImage = await resolveEmbeddedImageForPdf(
+        outputPdf,
+        edit,
+        docImageCache || new Map()
+      );
+      if (embeddedImage) {
+        const xv = edit.xRatio * viewWidth;
+        const yv = edit.yRatio * viewHeight;
+        const wv = (edit.widthRatio || 0.2) * viewWidth;
+        const hv = (edit.heightRatio || 0.2) * viewHeight;
+
+        drawRotatedViewImageOnPdfPage(
+          pdfPage,
+          embeddedImage,
+          xv,
+          yv,
+          wv,
+          hv,
+          normalizedRot,
+          x0,
+          y0,
+          rawWidth,
+          rawHeight
+        );
+      }
     } else if (edit.type === 'replace-text') {
       const maskX = (edit.maskXRatio ?? edit.xRatio) * viewWidth;
       const maskY = (edit.maskYRatio ?? edit.yRatio) * viewHeight;
@@ -915,8 +1454,9 @@ export async function buildExportPdf(
   const outputPdf = await PDFDocument.create();
   const totalPages = pageList.length;
 
-  // ドキュメント単位のフォント埋め込みキャッシュ
+  // ドキュメント単位のフォント・画像埋め込みキャッシュ
   const docFontCache = new Map();
+  const docImageCache = new Map();
   const loadedSourceDocs = new Map();
 
   // 全ページの通しページ番号（開始ページ・番号飛ばし考慮済み）を一括計算
@@ -973,14 +1513,15 @@ export async function buildExportPdf(
       targetPage.setRotation(degrees(totalRotation));
     }
 
-    // 1. 白塗り・既存テキスト置換/削除・新規テキスト追記の描画（要素ごとのフォント指定に対応）
+    // 1. 白塗り・図形・画像・既存テキスト置換/削除・新規テキスト追記の描画
     if (Array.isArray(pageItem.edits) && pageItem.edits.length > 0) {
       await applyEditsToPdfPage(
         outputPdf,
         targetPage,
         pageItem.edits,
         totalRotation,
-        docFontCache
+        docFontCache,
+        docImageCache
       );
     }
 
@@ -1050,7 +1591,11 @@ export function rotateEditsClockwise90(edits) {
   }
 
   return edits.map((edit) => {
-    if (edit.type === 'whiteout') {
+    if (
+      edit.type === 'whiteout' ||
+      edit.type === 'shape' ||
+      edit.type === 'image'
+    ) {
       return {
         ...edit,
         xRatio: Math.max(0, Math.min(1, 1 - edit.yRatio - edit.heightRatio)),
@@ -1096,7 +1641,11 @@ export function rotateEditsCounterClockwise90(edits) {
   }
 
   return edits.map((edit) => {
-    if (edit.type === 'whiteout') {
+    if (
+      edit.type === 'whiteout' ||
+      edit.type === 'shape' ||
+      edit.type === 'image'
+    ) {
       return {
         ...edit,
         xRatio: Math.max(0, Math.min(1, edit.yRatio)),

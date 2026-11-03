@@ -7,7 +7,8 @@ import {
   normalizeRotation,
   getEffectivePageDimensions,
   resolvePageNumberForPage,
-  getCssFontFamily
+  getCssFontFamily,
+  getCachedImageElement
 } from './pdf-engine.js';
 
 // pdf.js Worker の指定漏れ防止（初期化前に必ず設定）
@@ -48,14 +49,109 @@ export async function loadPdfJsDoc(pdfBytes) {
 }
 
 /**
- * 指定されたCanvasコンテキスト上に編集データ（白塗り矩形・既存テキスト置換/削除・新規テキスト追記）を描画する
+ * 2D Canvasコンテキスト上に単一の図形要素（□ 四角形 / 〇 丸・楕円 / △ 三角形 / ✓ チェック / × バツ印 / ― 直線）を描画する
+ *
+ * @param {CanvasRenderingContext2D} ctx - 描画先2Dコンテキスト
+ * @param {object} shapeConfig - 図形設定 ({ shapeType, strokeColor, fillEnabled, fillColor, strokeWidthPt })
+ * @param {number} x - 描画領域左上X (px)
+ * @param {number} y - 描画領域左上Y (px)
+ * @param {number} w - 描画領域幅 (px)
+ * @param {number} h - 描画領域高さ (px)
+ * @param {number} [scaleFactor=1] - PDFポイントからピクセルへの換算比率
+ */
+export function drawShapeOnCanvasContext(
+  ctx,
+  shapeConfig,
+  x,
+  y,
+  w,
+  h,
+  scaleFactor = 1
+) {
+  if (!ctx || !shapeConfig) {
+    return;
+  }
+
+  const shapeType = shapeConfig.shapeType || 'rect';
+  const strokeWidthPx = Math.max(
+    1,
+    (Number(shapeConfig.strokeWidthPt) || 2) * scaleFactor
+  );
+  const strokeColor = shapeConfig.strokeColor || '#000000';
+  const fillEnabled = Boolean(shapeConfig.fillEnabled);
+  const fillColor = shapeConfig.fillColor || '#ffffff';
+
+  ctx.save();
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = strokeWidthPx;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (shapeType === 'rect') {
+    if (fillEnabled) {
+      ctx.fillStyle = fillColor;
+      ctx.fillRect(x, y, w, h);
+    }
+    ctx.strokeRect(x, y, w, h);
+  } else if (shapeType === 'circle') {
+    ctx.beginPath();
+    ctx.ellipse(
+      x + w / 2,
+      y + h / 2,
+      Math.max(1, w / 2),
+      Math.max(1, h / 2),
+      0,
+      0,
+      Math.PI * 2
+    );
+    if (fillEnabled) {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+    ctx.stroke();
+  } else if (shapeType === 'triangle') {
+    ctx.beginPath();
+    ctx.moveTo(x + w / 2, y);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.closePath();
+    if (fillEnabled) {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+    ctx.stroke();
+  } else if (shapeType === 'check') {
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.14, y + h * 0.54);
+    ctx.lineTo(x + w * 0.42, y + h * 0.84);
+    ctx.lineTo(x + w * 0.88, y + h * 0.18);
+    ctx.stroke();
+  } else if (shapeType === 'cross') {
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.15, y + h * 0.15);
+    ctx.lineTo(x + w * 0.85, y + h * 0.85);
+    ctx.moveTo(x + w * 0.85, y + h * 0.15);
+    ctx.lineTo(x + w * 0.15, y + h * 0.85);
+    ctx.stroke();
+  } else if (shapeType === 'line') {
+    ctx.beginPath();
+    ctx.moveTo(x, y + h / 2);
+    ctx.lineTo(x + w, y + h / 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * 指定されたCanvasコンテキスト上に編集データ（白塗り矩形・図形・画像・既存テキスト置換/削除・新規テキスト追記）を描画する
  * サムネイルCanvasおよび拡大エディタCanvasの両方で共通利用できるヘルパー関数
  *
  * @param {CanvasRenderingContext2D} ctx - 描画先の2Dコンテキスト
  * @param {Array<object>} edits - 編集操作の配列
  * @param {number} canvasWidth - 描画先Canvasのピクセル幅
  * @param {number} canvasHeight - 描画先Canvasのピクセル高さ
- * @param {number} pdfPointWidth - スケール1.0時のPDFページ幅（フォントサイズ比率計算用）
+ * @param {number} pdfPointWidth - スケール1.0時のPDFページ幅（フォントサイズ・線幅比率計算用）
  */
 export function renderEditsOnCanvasContext(
   ctx,
@@ -80,6 +176,23 @@ export function renderEditsOnCanvasContext(
 
       ctx.fillStyle = edit.bgColor || '#ffffff';
       ctx.fillRect(x, y, w, h);
+    } else if (edit.type === 'shape') {
+      const x = edit.xRatio * canvasWidth;
+      const y = edit.yRatio * canvasHeight;
+      const w = (edit.widthRatio || 0.08) * canvasWidth;
+      const h = (edit.heightRatio || 0.08) * canvasHeight;
+
+      drawShapeOnCanvasContext(ctx, edit, x, y, w, h, scaleFactor);
+    } else if (edit.type === 'image' && edit.dataUrl) {
+      const x = edit.xRatio * canvasWidth;
+      const y = edit.yRatio * canvasHeight;
+      const w = (edit.widthRatio || 0.2) * canvasWidth;
+      const h = (edit.heightRatio || 0.2) * canvasHeight;
+
+      const imgElement = getCachedImageElement(edit.dataUrl);
+      if (imgElement) {
+        ctx.drawImage(imgElement, x, y, w, h);
+      }
     } else if (edit.type === 'replace-text') {
       // 1. 元のテキスト領域を周囲背景色でマスク消去
       const mX = (edit.maskXRatio ?? edit.xRatio) * canvasWidth;

@@ -1116,6 +1116,47 @@ svg.lucide {
   background-color: #ffffff;
 }
 
+.shape-quick-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background-color: #ffffff;
+  padding: 2px;
+  border-radius: 5px;
+  border: 1px solid var(--color-border-strong);
+}
+
+.shape-quick-btn {
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  background-color: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  line-height: 1.2;
+}
+
+.shape-quick-btn:hover {
+  background-color: var(--color-surface-subtle);
+  color: var(--color-text-primary);
+}
+
+.shape-quick-btn.active {
+  background-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.option-hint {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
 .toolbar-divider {
   width: 1px;
   height: 22px;
@@ -1193,8 +1234,13 @@ svg.lucide {
   touch-action: none;
 }
 
-#editor-overlay-canvas.mode-whiteout {
+#editor-overlay-canvas.mode-whiteout,
+#editor-overlay-canvas.mode-shape {
   cursor: crosshair;
+}
+
+#editor-overlay-canvas.mode-image {
+  cursor: copy;
 }
 
 #editor-overlay-canvas.mode-text {
@@ -1203,6 +1249,12 @@ svg.lucide {
 
 #editor-overlay-canvas.mode-direct-text {
   cursor: pointer;
+}
+
+.editor-canvas-viewport.drag-over-image {
+  outline: 4px dashed #60a5fa;
+  outline-offset: -8px;
+  background-color: #1e3a8a;
 }
 
 /* テキスト編集・追加用フローティングポップオーバー */
